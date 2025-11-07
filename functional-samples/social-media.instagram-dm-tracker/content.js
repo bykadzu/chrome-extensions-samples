@@ -56,8 +56,8 @@ class InstagramDMTracker {
     }, 2000);
   }
 
-  scanMessages() {
-    const currentMessages = this.extractMessages();
+  async scanMessages() {
+    const currentMessages = await this.extractMessages();
 
     // Check for deleted messages
     this.messages.forEach((storedMessage, messageId) => {
@@ -71,28 +71,36 @@ class InstagramDMTracker {
     this.messages = currentMessages;
   }
 
-  extractMessages() {
+  async extractMessages() {
     const messagesMap = new Map();
 
     // Instagram DM messages are typically in divs with specific roles
     // This selector targets message containers
     const messageElements = document.querySelectorAll('[role="row"], [role="listitem"]');
 
-    messageElements.forEach((element, index) => {
+    const promises = Array.from(messageElements).map(async (element, index) => {
       try {
-        const messageData = this.extractMessageData(element, index);
+        const messageData = await this.extractMessageData(element, index);
         if (messageData && messageData.id) {
-          messagesMap.set(messageData.id, messageData);
+          return { id: messageData.id, data: messageData };
         }
       } catch (error) {
         // Silently continue if extraction fails
+      }
+      return null;
+    });
+
+    const results = await Promise.all(promises);
+    results.forEach(result => {
+      if (result) {
+        messagesMap.set(result.id, result.data);
       }
     });
 
     return messagesMap;
   }
 
-  extractMessageData(element, index) {
+  async extractMessageData(element, index) {
     // Generate a unique ID based on content and position
     const textContent = element.textContent || '';
     const timestamp = Date.now();
@@ -102,6 +110,9 @@ class InstagramDMTracker {
     const imageUrls = Array.from(images)
       .map(img => img.src)
       .filter(src => src && !src.includes('emoji') && !src.includes('avatar'));
+
+    // Download images as base64 for permanent storage
+    const imageDataList = await this.downloadImages(imageUrls);
 
     // Try to find text content (excluding timestamps and usernames)
     const textElements = element.querySelectorAll('span, div[dir="auto"]');
@@ -127,12 +138,54 @@ class InstagramDMTracker {
         id: messageId,
         text: messageText,
         images: imageUrls,
+        imageData: imageDataList, // Base64 encoded images
         timestamp: timestamp,
         element: element.outerHTML.substring(0, 500) // Store snippet of HTML
       };
     }
 
     return null;
+  }
+
+  async downloadImages(imageUrls) {
+    const imageDataList = [];
+
+    for (const url of imageUrls.slice(0, 5)) { // Limit to 5 images per message
+      try {
+        const base64 = await this.imageToBase64(url);
+        if (base64) {
+          imageDataList.push(base64);
+        }
+      } catch (error) {
+        console.error('Error downloading image:', error);
+        // Continue with other images
+      }
+    }
+
+    return imageDataList;
+  }
+
+  async imageToBase64(url) {
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+
+      // Limit image size to 500KB
+      if (blob.size > 500000) {
+        console.warn('Image too large, skipping:', url);
+        return null;
+      }
+
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    } catch (error) {
+      console.error('Failed to convert image to base64:', error);
+      return null;
+    }
   }
 
   generateHash(str) {
